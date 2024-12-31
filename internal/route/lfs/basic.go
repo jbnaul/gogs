@@ -13,7 +13,7 @@ import (
 	"gopkg.in/macaron.v1"
 	log "unknwon.dev/clog/v2"
 
-	"gogs.io/gogs/internal/db"
+	"gogs.io/gogs/internal/database"
 	"gogs.io/gogs/internal/lfsutil"
 	"gogs.io/gogs/internal/strutil"
 )
@@ -25,6 +25,7 @@ const (
 )
 
 type basicHandler struct {
+	store Store
 	// The default storage backend for uploading new objects.
 	defaultStorage lfsutil.Storage
 	// The list of available storage backends to access objects.
@@ -42,10 +43,10 @@ func (h *basicHandler) Storager(storage lfsutil.Storage) lfsutil.Storager {
 }
 
 // GET /{owner}/{repo}.git/info/lfs/object/basic/{oid}
-func (h *basicHandler) serveDownload(c *macaron.Context, repo *db.Repository, oid lfsutil.OID) {
-	object, err := db.LFS.GetObjectByOID(c.Req.Context(), repo.ID, oid)
+func (h *basicHandler) serveDownload(c *macaron.Context, repo *database.Repository, oid lfsutil.OID) {
+	object, err := h.store.GetLFSObjectByOID(c.Req.Context(), repo.ID, oid)
 	if err != nil {
-		if db.IsErrLFSObjectNotExist(err) {
+		if database.IsErrLFSObjectNotExist(err) {
 			responseJSON(c.Resp, http.StatusNotFound, responseError{
 				Message: "Object does not exist",
 			})
@@ -75,17 +76,17 @@ func (h *basicHandler) serveDownload(c *macaron.Context, repo *db.Repository, oi
 }
 
 // PUT /{owner}/{repo}.git/info/lfs/object/basic/{oid}
-func (h *basicHandler) serveUpload(c *macaron.Context, repo *db.Repository, oid lfsutil.OID) {
+func (h *basicHandler) serveUpload(c *macaron.Context, repo *database.Repository, oid lfsutil.OID) {
 	// NOTE: LFS client will retry upload the same object if there was a partial failure,
 	// therefore we would like to skip ones that already exist.
-	_, err := db.LFS.GetObjectByOID(c.Req.Context(), repo.ID, oid)
+	_, err := h.store.GetLFSObjectByOID(c.Req.Context(), repo.ID, oid)
 	if err == nil {
 		// Object exists, drain the request body and we're good.
 		_, _ = io.Copy(io.Discard, c.Req.Request.Body)
 		c.Req.Request.Body.Close()
 		c.Status(http.StatusOK)
 		return
-	} else if !db.IsErrLFSObjectNotExist(err) {
+	} else if !database.IsErrLFSObjectNotExist(err) {
 		internalServerError(c.Resp)
 		log.Error("Failed to get object [repo_id: %d, oid: %s]: %v", repo.ID, oid, err)
 		return
@@ -105,7 +106,7 @@ func (h *basicHandler) serveUpload(c *macaron.Context, repo *db.Repository, oid 
 		return
 	}
 
-	err = db.LFS.CreateObject(c.Req.Context(), repo.ID, oid, written, s.Storage())
+	err = h.store.CreateLFSObject(c.Req.Context(), repo.ID, oid, written, s.Storage())
 	if err != nil {
 		// NOTE: It is OK to leave the file when the whole operation failed
 		// with a DB error, a retry on client side can safely overwrite the
@@ -120,7 +121,7 @@ func (h *basicHandler) serveUpload(c *macaron.Context, repo *db.Repository, oid 
 }
 
 // POST /{owner}/{repo}.git/info/lfs/object/basic/verify
-func (*basicHandler) serveVerify(c *macaron.Context, repo *db.Repository) {
+func (h *basicHandler) serveVerify(c *macaron.Context, repo *database.Repository) {
 	var request basicVerifyRequest
 	defer func() { _ = c.Req.Request.Body.Close() }()
 
@@ -139,9 +140,9 @@ func (*basicHandler) serveVerify(c *macaron.Context, repo *db.Repository) {
 		return
 	}
 
-	object, err := db.LFS.GetObjectByOID(c.Req.Context(), repo.ID, request.Oid)
+	object, err := h.store.GetLFSObjectByOID(c.Req.Context(), repo.ID, request.Oid)
 	if err != nil {
-		if db.IsErrLFSObjectNotExist(err) {
+		if database.IsErrLFSObjectNotExist(err) {
 			responseJSON(c.Resp, http.StatusNotFound, responseError{
 				Message: "Object does not exist",
 			})

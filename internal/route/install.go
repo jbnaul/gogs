@@ -21,7 +21,7 @@ import (
 	"gogs.io/gogs/internal/conf"
 	"gogs.io/gogs/internal/context"
 	"gogs.io/gogs/internal/cron"
-	"gogs.io/gogs/internal/db"
+	"gogs.io/gogs/internal/database"
 	"gogs.io/gogs/internal/email"
 	"gogs.io/gogs/internal/form"
 	"gogs.io/gogs/internal/markup"
@@ -71,19 +71,20 @@ func GlobalInit(customConf string) error {
 	if conf.Security.InstallLock {
 		highlight.NewContext()
 		markup.NewSanitizer()
-		if err := db.NewEngine(); err != nil {
+		err := database.NewEngine()
+		if err != nil {
 			log.Fatal("Failed to initialize ORM engine: %v", err)
 		}
-		db.HasEngine = true
+		database.HasEngine = true
 
-		db.LoadRepoConfig()
-		db.NewRepoContext()
+		database.LoadRepoConfig()
+		database.NewRepoContext()
 
 		// Booting long running goroutines.
 		cron.NewContext()
-		db.InitSyncMirrors()
-		db.InitDeliverHooks()
-		db.InitTestPullRequests()
+		database.InitSyncMirrors()
+		database.InitDeliverHooks()
+		database.InitTestPullRequests()
 	}
 	if conf.HasMinWinSvc {
 		log.Info("Builtin Windows Service is supported")
@@ -106,7 +107,7 @@ func GlobalInit(customConf string) error {
 	}
 
 	if conf.SSH.RewriteAuthorizedKeysAtStart {
-		if err := db.RewriteAuthorizedKeys(); err != nil {
+		if err := database.RewriteAuthorizedKeys(); err != nil {
 			log.Warn("Failed to rewrite authorized_keys file: %v", err)
 		}
 	}
@@ -230,7 +231,7 @@ func InstallPost(c *context.Context, f form.Install) {
 	}
 
 	// Set test engine.
-	if err := db.NewTestEngine(); err != nil {
+	if err := database.NewTestEngine(); err != nil {
 		if strings.Contains(err.Error(), `Unknown database type: sqlite3`) {
 			c.FormErr("DbType")
 			c.RenderWithErr(c.Tr("install.sqlite3_not_available", "https://gogs.io/docs/installation/install_from_binary.html"), INSTALL, &f)
@@ -338,13 +339,13 @@ func InstallPost(c *context.Context, f form.Install) {
 	}
 
 	if len(strings.TrimSpace(f.SMTPHost)) > 0 {
-		cfg.Section("mailer").Key("ENABLED").SetValue("true")
-		cfg.Section("mailer").Key("HOST").SetValue(f.SMTPHost)
-		cfg.Section("mailer").Key("FROM").SetValue(f.SMTPFrom)
-		cfg.Section("mailer").Key("USER").SetValue(f.SMTPUser)
-		cfg.Section("mailer").Key("PASSWD").SetValue(f.SMTPPasswd)
+		cfg.Section("email").Key("ENABLED").SetValue("true")
+		cfg.Section("email").Key("HOST").SetValue(f.SMTPHost)
+		cfg.Section("email").Key("FROM").SetValue(f.SMTPFrom)
+		cfg.Section("email").Key("USER").SetValue(f.SMTPUser)
+		cfg.Section("email").Key("PASSWORD").SetValue(f.SMTPPasswd)
 	} else {
-		cfg.Section("mailer").Key("ENABLED").SetValue("false")
+		cfg.Section("email").Key("ENABLED").SetValue("false")
 	}
 	cfg.Section("server").Key("OFFLINE_MODE").SetValue(com.ToStr(f.OfflineMode))
 	cfg.Section("auth").Key("REQUIRE_EMAIL_CONFIRMATION").SetValue(com.ToStr(f.RegisterConfirm))
@@ -390,18 +391,18 @@ func InstallPost(c *context.Context, f form.Install) {
 
 	// Create admin account
 	if len(f.AdminName) > 0 {
-		user, err := db.Users.Create(
+		user, err := database.Handle.Users().Create(
 			c.Req.Context(),
 			f.AdminName,
 			f.AdminEmail,
-			db.CreateUserOptions{
+			database.CreateUserOptions{
 				Password:  f.AdminPasswd,
 				Activated: true,
 				Admin:     true,
 			},
 		)
 		if err != nil {
-			if !db.IsErrUserAlreadyExist(err) {
+			if !database.IsErrUserAlreadyExist(err) {
 				conf.Security.InstallLock = false
 				c.FormErr("AdminName", "AdminEmail")
 				c.RenderWithErr(c.Tr("install.invalid_admin_setting", err), INSTALL, &f)
@@ -409,7 +410,7 @@ func InstallPost(c *context.Context, f form.Install) {
 			}
 
 			log.Info("Admin account already exist")
-			user, err = db.Users.GetByUsername(c.Req.Context(), f.AdminName)
+			user, err = database.Handle.Users().GetByUsername(c.Req.Context(), f.AdminName)
 			if err != nil {
 				c.Error(err, "get user by name")
 				return

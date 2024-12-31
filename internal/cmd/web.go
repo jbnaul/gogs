@@ -33,7 +33,7 @@ import (
 	"gogs.io/gogs/internal/app"
 	"gogs.io/gogs/internal/conf"
 	"gogs.io/gogs/internal/context"
-	"gogs.io/gogs/internal/db"
+	"gogs.io/gogs/internal/database"
 	"gogs.io/gogs/internal/form"
 	"gogs.io/gogs/internal/osutil"
 	"gogs.io/gogs/internal/route"
@@ -107,7 +107,7 @@ func newMacaron() *macaron.Macaron {
 		conf.Picture.RepositoryAvatarUploadPath,
 		macaron.StaticOptions{
 			ETag:        true,
-			Prefix:      db.REPO_AVATAR_URL_PREFIX,
+			Prefix:      database.REPO_AVATAR_URL_PREFIX,
 			SkipLogging: conf.Server.DisableRouterLog,
 		},
 	))
@@ -155,7 +155,7 @@ func newMacaron() *macaron.Macaron {
 		HealthCheckFuncs: []*toolbox.HealthCheckFuncDesc{
 			{
 				Desc: "Database connection",
-				Func: db.Ping,
+				Func: database.Ping,
 			},
 		},
 	}))
@@ -237,9 +237,11 @@ func runWeb(c *cli.Context) error {
 				m.Get("", user.SettingsOrganizations)
 				m.Post("/leave", user.SettingsLeaveOrganization)
 			})
-			m.Combo("/applications").Get(user.SettingsApplications).
-				Post(bindIgnErr(form.NewAccessToken{}), user.SettingsApplicationsPost)
-			m.Post("/applications/delete", user.SettingsDeleteApplication)
+
+			settingsHandler := user.NewSettingsHandler(user.NewSettingsStore())
+			m.Combo("/applications").Get(settingsHandler.Applications()).
+				Post(bindIgnErr(form.NewAccessToken{}), settingsHandler.ApplicationsPost())
+			m.Post("/applications/delete", settingsHandler.DeleteApplication())
 			m.Route("/delete", "GET,POST", user.SettingsDelete)
 		}, reqSignIn, func(c *context.Context) {
 			c.Data["PageIsUserSettings"] = true
@@ -305,7 +307,7 @@ func runWeb(c *cli.Context) error {
 			}, context.InjectParamsUser())
 
 			m.Get("/attachments/:uuid", func(c *context.Context) {
-				attach, err := db.GetAttachmentByUUID(c.Params(":uuid"))
+				attach, err := database.GetAttachmentByUUID(c.Params(":uuid"))
 				if err != nil {
 					c.NotFoundOrError(err, "get attachment by UUID")
 					return
@@ -652,7 +654,7 @@ func runWeb(c *cli.Context) error {
 			SetCookie:      true,
 			Secure:         conf.Server.URL.Scheme == "https",
 		}),
-		context.Contexter(),
+		context.Contexter(context.NewStore()),
 	)
 
 	// ***************************
@@ -666,7 +668,7 @@ func runWeb(c *cli.Context) error {
 			lfs.RegisterRoutes(m.Router)
 		})
 
-		m.Route("/*", "GET,POST,OPTIONS", context.ServeGoGet(), repo.HTTPContexter(), repo.HTTP)
+		m.Route("/*", "GET,POST,OPTIONS", context.ServeGoGet(), repo.HTTPContexter(repo.NewStore()), repo.HTTP)
 	})
 
 	// ***************************

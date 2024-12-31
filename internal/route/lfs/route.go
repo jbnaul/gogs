@@ -15,36 +15,39 @@ import (
 	"gogs.io/gogs/internal/authutil"
 	"gogs.io/gogs/internal/conf"
 	"gogs.io/gogs/internal/context"
-	"gogs.io/gogs/internal/db"
+	"gogs.io/gogs/internal/database"
 	"gogs.io/gogs/internal/lfsutil"
 )
 
-// RegisterRoutes registers LFS routes using given router, and inherits all groups and middleware.
+// RegisterRoutes registers LFS routes using given router, and inherits all
+// groups and middleware.
 func RegisterRoutes(r *macaron.Router) {
 	verifyAccept := verifyHeader("Accept", contentType, http.StatusNotAcceptable)
 	verifyContentTypeJSON := verifyHeader("Content-Type", contentType, http.StatusBadRequest)
 	verifyContentTypeStream := verifyHeader("Content-Type", "application/octet-stream", http.StatusBadRequest)
 
+	store := NewStore()
 	r.Group("", func() {
-		r.Post("/objects/batch", authorize(db.AccessModeRead), verifyAccept, verifyContentTypeJSON, serveBatch)
+		r.Post("/objects/batch", authorize(store, database.AccessModeRead), verifyAccept, verifyContentTypeJSON, serveBatch(store))
 		r.Group("/objects/basic", func() {
 			basic := &basicHandler{
+				store:          store,
 				defaultStorage: lfsutil.Storage(conf.LFS.Storage),
 				storagers: map[lfsutil.Storage]lfsutil.Storager{
 					lfsutil.StorageLocal: &lfsutil.LocalStorage{Root: conf.LFS.ObjectsPath},
 				},
 			}
 			r.Combo("/:oid", verifyOID()).
-				Get(authorize(db.AccessModeRead), basic.serveDownload).
-				Put(authorize(db.AccessModeWrite), verifyContentTypeStream, basic.serveUpload)
-			r.Post("/verify", authorize(db.AccessModeWrite), verifyAccept, verifyContentTypeJSON, basic.serveVerify)
+				Get(authorize(store, database.AccessModeRead), basic.serveDownload).
+				Put(authorize(store, database.AccessModeWrite), verifyContentTypeStream, basic.serveUpload)
+			r.Post("/verify", authorize(store, database.AccessModeWrite), verifyAccept, verifyContentTypeJSON, basic.serveVerify)
 		})
-	}, authenticate())
+	}, authenticate(store))
 }
 
 // authenticate tries to authenticate user via HTTP Basic Auth. It first tries to authenticate
 // as plain username and password, then use username as access token if previous step failed.
-func authenticate() macaron.Handler {
+func authenticate(store Store) macaron.Handler {
 	askCredentials := func(w http.ResponseWriter) {
 		w.Header().Set("Lfs-Authenticate", `Basic realm="Git LFS"`)
 		responseJSON(w, http.StatusUnauthorized, responseError{
@@ -59,14 +62,14 @@ func authenticate() macaron.Handler {
 			return
 		}
 
-		user, err := db.Users.Authenticate(c.Req.Context(), username, password, -1)
+		user, err := store.AuthenticateUser(c.Req.Context(), username, password, -1)
 		if err != nil && !auth.IsErrBadCredentials(err) {
 			internalServerError(c.Resp)
 			log.Error("Failed to authenticate user [name: %s]: %v", username, err)
 			return
 		}
 
-		if err == nil && db.TwoFactors.IsEnabled(c.Req.Context(), user.ID) {
+		if err == nil && store.IsTwoFactorEnabled(c.Req.Context(), user.ID) {
 			c.Error(http.StatusBadRequest, "Users with 2FA enabled are not allowed to authenticate via username and password.")
 			return
 		}
@@ -74,16 +77,16 @@ func authenticate() macaron.Handler {
 		// If username and password combination failed, try again using either username
 		// or password as the token.
 		if auth.IsErrBadCredentials(err) {
-			user, err = context.AuthenticateByToken(c.Req.Context(), username)
-			if err != nil && !db.IsErrAccessTokenNotExist(err) {
+			user, err = context.AuthenticateByToken(store, c.Req.Context(), username)
+			if err != nil && !database.IsErrAccessTokenNotExist(err) {
 				internalServerError(c.Resp)
 				log.Error("Failed to authenticate by access token via username: %v", err)
 				return
-			} else if db.IsErrAccessTokenNotExist(err) {
+			} else if database.IsErrAccessTokenNotExist(err) {
 				// Try again using the password field as the token.
-				user, err = context.AuthenticateByToken(c.Req.Context(), password)
+				user, err = context.AuthenticateByToken(store, c.Req.Context(), password)
 				if err != nil {
-					if db.IsErrAccessTokenNotExist(err) {
+					if database.IsErrAccessTokenNotExist(err) {
 						askCredentials(c.Resp)
 					} else {
 						c.Status(http.StatusInternalServerError)
@@ -101,14 +104,14 @@ func authenticate() macaron.Handler {
 }
 
 // authorize tries to authorize the user to the context repository with given access mode.
-func authorize(mode db.AccessMode) macaron.Handler {
-	return func(c *macaron.Context, actor *db.User) {
+func authorize(store Store, mode database.AccessMode) macaron.Handler {
+	return func(c *macaron.Context, actor *database.User) {
 		username := c.Params(":username")
 		reponame := strings.TrimSuffix(c.Params(":reponame"), ".git")
 
-		owner, err := db.Users.GetByUsername(c.Req.Context(), username)
+		owner, err := store.GetUserByUsername(c.Req.Context(), username)
 		if err != nil {
-			if db.IsErrUserNotExist(err) {
+			if database.IsErrUserNotExist(err) {
 				c.Status(http.StatusNotFound)
 			} else {
 				internalServerError(c.Resp)
@@ -117,9 +120,9 @@ func authorize(mode db.AccessMode) macaron.Handler {
 			return
 		}
 
-		repo, err := db.Repos.GetByName(c.Req.Context(), owner.ID, reponame)
+		repo, err := store.GetRepositoryByName(c.Req.Context(), owner.ID, reponame)
 		if err != nil {
-			if db.IsErrRepoNotExist(err) {
+			if database.IsErrRepoNotExist(err) {
 				c.Status(http.StatusNotFound)
 			} else {
 				internalServerError(c.Resp)
@@ -128,8 +131,8 @@ func authorize(mode db.AccessMode) macaron.Handler {
 			return
 		}
 
-		if !db.Perms.Authorize(c.Req.Context(), actor.ID, repo.ID, mode,
-			db.AccessModeOptions{
+		if !store.AuthorizeRepositoryAccess(c.Req.Context(), actor.ID, repo.ID, mode,
+			database.AccessModeOptions{
 				OwnerID: repo.OwnerID,
 				Private: repo.IsPrivate,
 			},

@@ -14,8 +14,8 @@ import (
 
 	"gogs.io/gogs/internal/conf"
 	"gogs.io/gogs/internal/context"
-	"gogs.io/gogs/internal/db"
-	"gogs.io/gogs/internal/db/errors"
+	"gogs.io/gogs/internal/database"
+	"gogs.io/gogs/internal/database/errors"
 	"gogs.io/gogs/internal/form"
 	"gogs.io/gogs/internal/gitutil"
 	"gogs.io/gogs/internal/pathutil"
@@ -135,6 +135,7 @@ func editFilePost(c *context.Context, f form.EditRepoFile, isNewFile bool) {
 		branchName = f.NewBranchName
 	}
 
+	// 🚨 SECURITY: Prevent path traversal.
 	f.TreePath = pathutil.Clean(f.TreePath)
 	treeNames, treePaths := getParentTreeFields(f.TreePath)
 
@@ -192,6 +193,7 @@ func editFilePost(c *context.Context, f form.EditRepoFile, isNewFile bool) {
 				return
 			}
 		} else {
+			// 🚨 SECURITY: Do not allow editing if the target file is a symlink.
 			if entry.IsSymlink() {
 				c.FormErr("TreePath")
 				c.RenderWithErr(c.Tr("repo.editor.file_is_a_symlink", part), tmplEditorEdit, &f)
@@ -205,7 +207,7 @@ func editFilePost(c *context.Context, f form.EditRepoFile, isNewFile bool) {
 	}
 
 	if !isNewFile {
-		_, err := c.Repo.Commit.TreeEntry(oldTreePath)
+		entry, err := c.Repo.Commit.TreeEntry(oldTreePath)
 		if err != nil {
 			if gitutil.IsErrRevisionNotExist(err) {
 				c.FormErr("TreePath")
@@ -215,6 +217,14 @@ func editFilePost(c *context.Context, f form.EditRepoFile, isNewFile bool) {
 			}
 			return
 		}
+
+		// 🚨 SECURITY: Do not allow editing if the old file is a symlink.
+		if entry.IsSymlink() {
+			c.FormErr("TreePath")
+			c.RenderWithErr(c.Tr("repo.editor.file_is_a_symlink", oldTreePath), tmplEditorEdit, &f)
+			return
+		}
+
 		if lastCommit != c.Repo.CommitID {
 			files, err := c.Repo.Commit.FilesChangedAfter(lastCommit)
 			if err != nil {
@@ -261,7 +271,7 @@ func editFilePost(c *context.Context, f form.EditRepoFile, isNewFile bool) {
 		message += "\n\n" + f.CommitMessage
 	}
 
-	if err := c.Repo.Repository.UpdateRepoFile(c.User, db.UpdateRepoFileOptions{
+	if err := c.Repo.Repository.UpdateRepoFile(c.User, database.UpdateRepoFileOptions{
 		OldBranch:   oldBranchName,
 		NewBranch:   branchName,
 		OldTreeName: oldTreePath,
@@ -292,7 +302,8 @@ func NewFilePost(c *context.Context, f form.EditRepoFile) {
 }
 
 func DiffPreviewPost(c *context.Context, f form.EditPreviewDiff) {
-	treePath := c.Repo.TreePath
+	// 🚨 SECURITY: Prevent path traversal.
+	treePath := pathutil.Clean(c.Repo.TreePath)
 
 	entry, err := c.Repo.Commit.TreeEntry(treePath)
 	if err != nil {
@@ -333,6 +344,7 @@ func DeleteFilePost(c *context.Context, f form.DeleteRepoFile) {
 	c.PageIs("Delete")
 	c.Data["BranchLink"] = c.Repo.RepoLink + "/src/" + c.Repo.BranchName
 
+	// 🚨 SECURITY: Prevent path traversal.
 	c.Repo.TreePath = pathutil.Clean(c.Repo.TreePath)
 	c.Data["TreePath"] = c.Repo.TreePath
 
@@ -370,7 +382,7 @@ func DeleteFilePost(c *context.Context, f form.DeleteRepoFile) {
 		message += "\n\n" + f.CommitMessage
 	}
 
-	if err := c.Repo.Repository.DeleteRepoFile(c.User, db.DeleteRepoFileOptions{
+	if err := c.Repo.Repository.DeleteRepoFile(c.User, database.DeleteRepoFileOptions{
 		LastCommitID: c.Repo.CommitID,
 		OldBranch:    oldBranchName,
 		NewBranch:    branchName,
@@ -428,6 +440,7 @@ func UploadFilePost(c *context.Context, f form.UploadRepoFile) {
 		branchName = f.NewBranchName
 	}
 
+	// 🚨 SECURITY: Prevent path traversal.
 	f.TreePath = pathutil.Clean(f.TreePath)
 	treeNames, treePaths := getParentTreeFields(f.TreePath)
 	if len(treeNames) == 0 {
@@ -489,7 +502,7 @@ func UploadFilePost(c *context.Context, f form.UploadRepoFile) {
 		message += "\n\n" + f.CommitMessage
 	}
 
-	if err := c.Repo.Repository.UploadRepoFiles(c.User, db.UploadRepoFileOptions{
+	if err := c.Repo.Repository.UploadRepoFiles(c.User, database.UploadRepoFileOptions{
 		LastCommitID: c.Repo.CommitID,
 		OldBranch:    oldBranchName,
 		NewBranch:    branchName,
@@ -541,7 +554,7 @@ func UploadFileToServer(c *context.Context) {
 		}
 	}
 
-	upload, err := db.NewUpload(header.Filename, buf, file)
+	upload, err := database.NewUpload(header.Filename, buf, file)
 	if err != nil {
 		c.Error(err, "new upload")
 		return
@@ -559,7 +572,7 @@ func RemoveUploadFileFromServer(c *context.Context, f form.RemoveUploadFile) {
 		return
 	}
 
-	if err := db.DeleteUploadByUUID(f.File); err != nil {
+	if err := database.DeleteUploadByUUID(f.File); err != nil {
 		c.Error(err, "delete upload by UUID")
 		return
 	}

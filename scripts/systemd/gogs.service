@@ -1,6 +1,5 @@
 [Unit]
 Description=Gogs
-After=syslog.target
 After=network.target
 After=mariadb.service mysql.service mysqld.service postgresql.service memcached.service redis.service
 
@@ -17,6 +16,7 @@ Group=git
 WorkingDirectory=/home/git/gogs
 ExecStart=/home/git/gogs/gogs web
 Restart=always
+RestartSec=2s
 Environment=USER=git HOME=/home/git
 
 # Some distributions may not support these hardening directives. If you cannot start the service due

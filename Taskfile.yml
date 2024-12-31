@@ -42,7 +42,7 @@ tasks:
   generate-schemadoc:
     desc: Generate database schema documentation
     cmds:
-      - go generate ./internal/db/schemadoc
+      - go generate ./internal/database/schemadoc
 
   generate:
     desc: Run all go:generate commands
@@ -90,3 +90,12 @@ tasks:
     desc: Identify legacy and deprecated lines
     cmds:
       - grep -rnw "\(LEGACY\|Deprecated\)" internal
+
+  drop-test-db:
+    desc: Drop the test database
+    cmds:
+      - |
+        for dbname in $(psql -Xc "copy (select datname from pg_database where datname like 'gogs-%') to stdout"); do
+          dropdb "$dbname"
+          echo "dropped $dbname"
+        done
